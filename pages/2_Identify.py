@@ -40,6 +40,26 @@ if st.session_state.identify_locked:
 
 st.caption(f"Attempt {st.session_state.identify_attempt + 1} of {config.MAX_IDENTIFICATION_ATTEMPTS}")
 
+with st.expander("Advanced — evaluation threshold (testing only)"):
+    st.caption(
+        "Temporarily changes the confirmed-match similarity threshold for this browser session only. "
+        "It does not change src/config.py. This is a testing control for comparing thresholds, "
+        "not a confidence setting."
+    )
+    confirmed_threshold = round(st.slider(
+        "Confirmed-match similarity threshold",
+        min_value=float(config.UNCERTAIN_LOWER_BOUND),
+        max_value=0.90,
+        value=float(config.CONFIRMED_THRESHOLD),
+        step=0.01,
+        key="eval_confirmed_threshold",
+    ), 2)
+if confirmed_threshold != config.CONFIRMED_THRESHOLD:
+    st.warning(
+        f"Evaluation override active: confirmed threshold {confirmed_threshold:.2f} "
+        f"(default {config.CONFIRMED_THRESHOLD}). Uncertain lower bound unchanged at {config.UNCERTAIN_LOWER_BOUND}."
+    )
+
 uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
 
 if uploaded_file:
@@ -63,7 +83,7 @@ if uploaded_file:
         any_uncertain = False
 
         for idx, face in enumerate(faces):
-            result = best_match(face.embedding, enrolled)
+            result = best_match(face.embedding, enrolled, confirmed_threshold)
             st.markdown(f"### Face {idx + 1}")
 
             if result.status == MatchStatus.CONFIRMED:
@@ -75,7 +95,7 @@ if uploaded_file:
                 st.warning(
                     f"⚠ Identity Not Confirmed — closest candidate **{result.person_name}**\n\n"
                     f"Similarity: `{result.similarity:.2f}` "
-                    f"(confirmed threshold: `{config.CONFIRMED_THRESHOLD}`)\n\n"
+                    f"(confirmed threshold: `{confirmed_threshold:.2f}`)\n\n"
                     "This result is too close to confidently identify the person. "
                     "This candidate name is shown for context only and is **not** a confirmed match."
                 )

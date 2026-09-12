@@ -45,3 +45,11 @@ def test_best_match_uncertain_band():
     enrolled = [(1, "Alice", np.array([0.55, 0.83]))]  # similarity ~0.55
     result = best_match(query, enrolled)
     assert result.status == MatchStatus.UNCERTAIN
+
+
+def test_best_match_threshold_override_only_moves_confirmed_boundary():
+    query = np.array([1.0, 0.0])
+    enrolled = [(1, "Alice", np.array([0.55, 0.83]))]  # similarity ~0.55
+    assert best_match(query, enrolled, confirmed_threshold=0.50).status == MatchStatus.CONFIRMED
+    assert best_match(query, enrolled, confirmed_threshold=0.60).status == MatchStatus.UNCERTAIN
+    assert best_match(query, enrolled, confirmed_threshold=None).status == MatchStatus.UNCERTAIN

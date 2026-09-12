@@ -43,11 +43,17 @@ class MatchResult:
 def best_match(
     query_embedding: np.ndarray,
     enrolled: List[Tuple[int, str, np.ndarray]],
+    confirmed_threshold: Optional[float] = None,
 ) -> MatchResult:
     """
     enrolled: list of (person_id, name, embedding) for every enrolled person.
     Applies the three-tier decision policy using the thresholds in config.py.
+    confirmed_threshold: optional evaluation-only override of
+    config.CONFIRMED_THRESHOLD (used by the Identify page's testing slider).
     """
+    if confirmed_threshold is None:
+        confirmed_threshold = config.CONFIRMED_THRESHOLD
+
     if not enrolled:
         return MatchResult(MatchStatus.UNKNOWN, None, None, 0.0)
 
@@ -57,7 +63,7 @@ def best_match(
     ]
     person_id, name, score = max(scored, key=lambda t: t[2])
 
-    if score >= config.CONFIRMED_THRESHOLD:
+    if score >= confirmed_threshold:
         return MatchResult(MatchStatus.CONFIRMED, person_id, name, score)
     elif score >= config.UNCERTAIN_LOWER_BOUND:
         # Candidate name is carried for display context, but callers must
