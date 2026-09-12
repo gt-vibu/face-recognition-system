@@ -1,0 +1,65 @@
+# Architecture
+
+## System overview
+
+A single-process Streamlit application. No separate frontend/backend split — chosen deliberately for a 3-day, $0, solo-built assignment where integration risk (CORS, two dev servers, API contracts) would cost more time than it buys in polish. See `docs/DECISIONS.md` for the full reasoning.
+
+```
+Streamlit UI (pages/)
+        ↓
+src/embeddings.py   — InsightFace detection + ArcFace embedding
+src/matching.py     — cosine similarity + tiered decision policy
+src/database.py     — SQLite persistence
+src/config.py       — thresholds, paths, retry limits
+        ↓
+SQLite file (data/face_db.sqlite3)
+```
+
+## Responsibility boundaries
+
+- **UI layer (`app.py`, `pages/*.py`)**: presentation, file upload widgets, session state (retry counters), calling into `src/`. No ML or SQL logic lives here.
+- **ML layer (`src/embeddings.py`)**: the only file that touches InsightFace. Detection and embedding extraction happen in one call since InsightFace's `FaceAnalysis.get()` does both in a single forward pass.
+- **Matching layer (`src/matching.py`)**: pure functions — cosine similarity and threshold logic — no I/O, fully unit-testable without any ML dependency installed (see `tests/test_matching.py`).
+- **Persistence layer (`src/database.py`)**: all SQL lives here; no other file opens a `sqlite3` connection directly.
+- **Config (`src/config.py`)**: the single source of truth for thresholds, retry limits, and paths — every other module imports from here rather than hardcoding values.
+
+## Data flow — enrollment
+
+```
+User uploads N images
+  → detect_faces() per image
+  → reject images with 0 or >1 faces
+  → average accepted embeddings, re-normalize
+  → database.add_or_update_person()
+```
+
+## Data flow — identification
+
+```
+User uploads 1 image
+  → detect_faces() (may return multiple faces)
+  → for each face: cosine_similarity vs every enrolled embedding
+  → best_match() applies the tiered Confirmed/Uncertain/Unknown policy
+  → Uncertain results increment a bounded session-level retry counter
+```
+
+## Why no vector database / FAISS
+
+At the scale this assignment targets (single-digit to low-tens of enrolled people), a linear scan over stored embeddings in `database.get_person_embeddings_for_matching()` is fast enough (milliseconds) and far simpler to reason about and debug than standing up an ANN index. This is called out explicitly in the README's "Future improvements" section as the correct next step at larger scale — not implemented now because it adds complexity with no present benefit.
+
+## Error handling
+
+- No face detected → inline error, no crash, no partial state written.
+- Multiple faces during enrollment → rejected per-image with an explanation; enrollment only proceeds using unambiguous single-face images.
+- Multiple faces during identification → each face processed and reported independently.
+- Uncertain match → never silently promoted to a confirmed identity; explicit retry flow with a hard cap.
+- Backend/model load failure (e.g. InsightFace weights fail to download) → surfaces as a Streamlit exception; not silently swallowed, since silently returning fabricated results would be worse than a visible error.
+
+## Security / privacy
+
+See README "Privacy considerations." Practically enforced via `.gitignore` (excludes `data/` and `evaluation_data/`) rather than relying on developer discipline alone.
+
+## Scaling considerations (not implemented, documented for completeness)
+
+- Beyond a few hundred enrolled people: swap the linear scan in `matching.best_match` for an ANN index (FAISS `IndexFlatIP` is a drop-in start since embeddings are already L2-normalized, making inner product equivalent to cosine similarity).
+- Beyond single-machine usage: SQLite would need to become a proper client-server database (e.g. Postgres) to support concurrent writers safely.

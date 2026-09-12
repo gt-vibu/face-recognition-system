@@ -1,0 +1,13 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Local biometric/personal data — never commit these
+data/
+*.sqlite3
+*.db
+evaluation_data/
+
+.DS_Store
+.streamlit/secrets.toml
