@@ -40,7 +40,7 @@
 **Options considered:** (a) keep Streamlit only, (b) Next.js calling a thin API over the existing `src/` code, (c) rewrite the backend.
 **Decision:** (b). `api.py` (FastAPI) exposes status / persons / detect / enroll / identify endpoints and calls the same `src/` functions as the Streamlit pages; the Next.js app (`frontend/`) proxies `/api/*` to it via `next.config.ts`, so there is no CORS configuration.
 **Reason:** A much more usable interface without touching the recognition code — detection, embeddings, matching, thresholds and the database are shared, and the Streamlit app keeps working unchanged against the same database.
-**Tradeoff:** Two processes to run (API + web UI) and a second UI to maintain. The enrollment averaging steps exist in both `pages/1_Enroll.py` and `api.py` (identical math) rather than in one shared function.
+**Tradeoff:** Two processes to run (API + web UI) and a second UI to maintain. The per-photo validation loop exists in both `pages/1_Enroll.py` and `api.py`; the enrollment maths itself is shared in `src/enrollment.py` (Decision 014).
 
 ### Decision 009 — Retry counter kept in the browser, not on the server
 **Decision:** The Next.js Identify page keeps the attempt counter in React state; the API stays stateless.
@@ -68,3 +68,11 @@
 **Decision:** The Enroll page recommends 3 photos with slightly different angles or lighting; the minimum stays 2 and up to 5 are averaged.
 **Reason:** On LFW at the same 0.62 threshold, 3 photos raised confident identification from 90.2% to 95.9% (4 photos: 97.3%), still with zero wrong-person or stranger confirmations — better recognition without making the decision less conservative or touching the model.
 **Tradeoff:** None in code (enrollment already averaged any number of accepted photos); only a hint.
+
+### Decision 014 — Adding photos to an existing person: store the embedding sum
+**Context:** Re-enrolling a name used to replace the stored reference, so a 4th photo added days later discarded the first three. Only a normalised reference was stored, and its original length is lost — `reference × count` does not give back the true sum, so it cannot be extended exactly.
+**Options considered:** (a) keep replace-only, (b) approximate `normalise(reference × count + new)`, (c) store the un-normalised embedding sum next to the reference, (d) store every sample embedding.
+**Decision:** (c). A new nullable `embedding_sum` column (float64) plus the existing `num_samples`. The reference is `normalise(sum)` — the same direction as the old normalised mean, so matching is unchanged. **Add photos** (1–5 valid single-face photos) does `sum += new`, `count += n`, re-normalise, in one transaction — exactly equal to enrolling all photos at once. **Replace enrollment** stays available, and enrolling an existing name now requires choosing one of the two (the API refuses `mode=new` for an existing name).
+**Existing rows:** the column is added automatically; rows enrolled before it have `embedding_sum = NULL`. Their true sum cannot be reconstructed, so they are **replace-only** (the UI says so) until re-enrolled once — no guessed sum is written.
+**Privacy:** enrollment photos are still not retained; only vectors and the existing single thumbnail.
+**Tradeoff:** Added photos are not checked against the person's existing reference, so a wrong person's photo would dilute it until replaced. (d) would allow removing individual samples but stores more biometric data than needed.

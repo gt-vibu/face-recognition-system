@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import Link from "next/link"
-import { CircleX, Plus, Trash } from "lucide-react"
+import { CircleX, ImagePlus, Plus, Trash } from "lucide-react"
 
 import { PageHeader } from "@/components/page-header"
 import { PersonAvatar } from "@/components/person-avatar"
@@ -114,7 +114,21 @@ export default function PeoplePage() {
                   <TableCell className="hidden text-muted-foreground tabular-nums sm:table-cell">
                     {person.created_at.slice(0, 10)}
                   </TableCell>
-                  <TableCell className="w-12 pr-5 text-right sm:pr-6">
+                  <TableCell className="pr-5 text-right whitespace-nowrap sm:pr-6">
+                    {/* Opens Enroll with this person's name filled in, where "Add photos" is the default choice. */}
+                    <Link
+                      href={`/enroll?name=${encodeURIComponent(person.name)}`}
+                      className={cn(buttonVariants({ variant: "outline", size: "sm" }), "mr-1")}
+                      aria-label={`${person.can_add_photos ? "Add photos to" : "Re-enroll"} ${person.name}`}
+                      title={
+                        person.can_add_photos
+                          ? `Add photos to ${person.name}'s enrollment`
+                          : `${person.name} was enrolled before adding photos was supported — re-enroll once to enable it`
+                      }
+                    >
+                      <ImagePlus />
+                      <span className="hidden sm:inline">{person.can_add_photos ? "Add photos" : "Re-enroll"}</span>
+                    </Link>
                     <AlertDialog>
                       <AlertDialogTrigger
                         render={

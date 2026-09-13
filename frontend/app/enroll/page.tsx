@@ -9,7 +9,7 @@ import { Button, buttonVariants } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useSystemStatus } from "@/hooks/use-system-status"
-import { api, errorMessage } from "@/lib/api"
+import { api, errorMessage, type Person } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 const ACCEPTED = ["image/jpeg", "image/png"]
@@ -31,7 +31,9 @@ export default function EnrollPage() {
   const [wrongType, setWrongType] = React.useState(false)
   const [dragging, setDragging] = React.useState(false)
   const dragDepth = React.useRef(0)
-  const [existingNames, setExistingNames] = React.useState<string[]>([])
+  const [existing, setExisting] = React.useState<Person[]>([])
+  // For an already-enrolled name the user must pick what saving does; reset whenever the name changes.
+  const [choice, setChoice] = React.useState<"add" | "replace" | null>(null)
   const [saving, setSaving] = React.useState(false)
   const [saveError, setSaveError] = React.useState<string | null>(null)
   const [saved, setSaved] = React.useState<string | null>(null)
@@ -41,8 +43,14 @@ export default function EnrollPage() {
   const maxImages = status?.max_enrollment_images ?? 5
 
   React.useEffect(() => {
-    api.persons().then((ps) => setExistingNames(ps.map((p) => p.name)), () => {})
+    api.persons().then(setExisting, () => {})
   }, [saved])
+
+  // "Add photos" on the People page links here as /enroll?name=… — prefill that name.
+  React.useEffect(() => {
+    const preset = new URLSearchParams(window.location.search).get("name")
+    if (preset) setName(preset)
+  }, [])
 
   // Preview object URLs are freed when a photo is removed, after saving, or on unmount.
   const previewUrls = React.useRef(new Map<string, string>())
@@ -94,20 +102,33 @@ export default function EnrollPage() {
   const usable = photos.filter((p) => p.check === "ok")
   const unusableCount = photos.filter((p) => p.check !== "ok" && p.check !== "checking").length
   const stillChecking = photos.some((p) => p.check === "checking")
-  const ready = nameClean !== "" && usable.length >= minImages && !stillChecking && !saving
-  const nameExists = nameClean !== "" && existingNames.includes(nameClean)
+  const existingPerson = nameClean === "" ? undefined : existing.find((p) => p.name === nameClean)
+  // "new" for a new name; for an existing one, "add" by default when possible — never an implicit replace.
+  const mode: "new" | "add" | "replace" | null = !existingPerson
+    ? "new"
+    : (choice ?? (existingPerson.can_add_photos ? "add" : null))
+  // Adding to an existing enrollment needs only one photo; new and replace keep the usual minimum.
+  const requiredPhotos = mode === "add" ? 1 : minImages
+  const ready = nameClean !== "" && mode !== null && usable.length >= requiredPhotos && !stillChecking && !saving
   const full = photos.length >= maxImages
-  const enough = usable.length >= minImages && !stillChecking
+  const enough = usable.length >= requiredPhotos && !stillChecking
   // Show the required slots plus one more, growing as photos are added (never more than the max).
-  const visibleSlots = Math.min(maxImages, Math.max(minImages + 1, photos.length + 1))
+  const visibleSlots = Math.min(maxImages, Math.max(requiredPhotos + 1, photos.length + 1))
 
   async function save() {
     setSaving(true)
     setSaveError(null)
     try {
-      const res = await api.enroll(nameClean, usable.map((p) => p.file))
-      setSaved(`${res.name} ${res.updated ? "updated" : "enrolled"} with ${res.num_samples} photos.`)
+      const files = usable.map((p) => p.file)
+      if (mode === "add" && existingPerson) {
+        const res = await api.addPhotos(existingPerson.person_id, files)
+        setSaved(`Added ${res.added} photo${res.added === 1 ? "" : "s"} to ${res.name} — ${res.num_samples} in total.`)
+      } else {
+        const res = await api.enroll(nameClean, files, mode === "replace" ? "replace" : "new")
+        setSaved(`${res.name} ${res.mode === "replace" ? "re-enrolled" : "enrolled"} with ${res.num_samples} photos.`)
+      }
       setName("")
+      setChoice(null)
       clearPhotos()
     } catch (e) {
       setSaveError(errorMessage(e))
@@ -118,11 +139,11 @@ export default function EnrollPage() {
 
   function progressText() {
     if (stillChecking) return "Checking photos…"
-    if (usable.length < minImages) {
-      const need = minImages - usable.length
-      return `${usable.length} of ${minImages} photos added — add at least ${need === 1 ? "one more" : `${need} more`}`
+    if (usable.length < requiredPhotos) {
+      const need = requiredPhotos - usable.length
+      return `${usable.length} of ${requiredPhotos} photos added — add at least ${need === 1 ? "one more" : `${need} more`}`
     }
-    return `${usable.length} photos ready`
+    return `${usable.length} photo${usable.length === 1 ? "" : "s"} ready`
   }
 
   return (
@@ -130,7 +151,9 @@ export default function EnrollPage() {
       <header className="text-center">
         <h1 className="text-2xl font-semibold tracking-tight">Enroll a person</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          Add {minImages}–{maxImages} photos of the same person.
+          {mode === "add" && existingPerson
+            ? `Add 1–${maxImages} more photos of ${existingPerson.name}.`
+            : `Add ${minImages}–${maxImages} photos of the same person.`}
           <br className="hidden sm:block" /> For best results, add 3 photos with slightly different angles or lighting.
         </p>
       </header>
@@ -219,7 +242,7 @@ export default function EnrollPage() {
             <PhotoCard key={photo.id} photo={photo} onRemove={() => removePhoto(photo.id)} />
           ))}
           {Array.from({ length: Math.max(visibleSlots - photos.length, 0) }, (_, i) => (
-            <AddSlot key={`slot-${photos.length + i}`} optional={photos.length + i >= minImages} />
+            <AddSlot key={`slot-${photos.length + i}`} optional={photos.length + i >= requiredPhotos} />
           ))}
         </ul>
 
@@ -258,14 +281,23 @@ export default function EnrollPage() {
           <Input
             id="name"
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => {
+              setName(e.target.value)
+              setChoice(null)
+            }}
             placeholder="e.g. Priya Sharma"
             className="h-9"
           />
-          {nameExists && (
-            <p className="flex items-center gap-1.5 text-xs text-amber-700">
-              <TriangleAlert className="size-3.5 shrink-0" /> Already enrolled — saving will update their stored data.
-            </p>
+          {!existingPerson && (
+            <p className="text-xs text-muted-foreground">Already enrolled? Enter their exact name to add more photos.</p>
+          )}
+          {existingPerson && (
+            <ExistingPersonChoice
+              person={existingPerson}
+              mode={mode}
+              minImages={minImages}
+              onChoose={setChoice}
+            />
           )}
           {saveError && <p className="text-xs text-red-700">{saveError}</p>}
         </div>
@@ -273,11 +305,60 @@ export default function EnrollPage() {
         <div className="mt-5 flex justify-end">
           <Button onClick={save} disabled={!ready} size="lg" className="px-4">
             {saving ? <LoaderCircle className="animate-spin" /> : null}
-            Save person
+            {mode === "add" ? "Add photos" : mode === "replace" ? "Replace enrollment" : "Save person"}
             {!saving && <ArrowRight />}
           </Button>
         </div>
       </section>
+    </div>
+  )
+}
+
+// Shown when the typed name is already enrolled: saving must be an explicit "add" or "replace".
+function ExistingPersonChoice({
+  person,
+  mode,
+  minImages,
+  onChoose,
+}: {
+  person: Person
+  mode: "new" | "add" | "replace" | null
+  minImages: number
+  onChoose: (choice: "add" | "replace") => void
+}) {
+  const option = (value: "add" | "replace", label: string, disabled = false) => (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={mode === value}
+      disabled={disabled}
+      onClick={() => onChoose(value)}
+      className={cn(
+        buttonVariants({ variant: mode === value ? "default" : "outline", size: "sm" }),
+        "disabled:opacity-40"
+      )}
+    >
+      {label}
+    </button>
+  )
+  return (
+    <div className="mt-1 grid gap-2 rounded-md border border-border bg-stone-50 p-3">
+      <p className="flex items-center gap-1.5 text-xs text-amber-700">
+        <TriangleAlert className="size-3.5 shrink-0" />
+        {person.name} is already enrolled ({person.num_samples} photo{person.num_samples === 1 ? "" : "s"}). Choose
+        what saving does:
+      </p>
+      <div role="radiogroup" aria-label="Existing enrollment" className="flex flex-wrap gap-2">
+        {option("add", "Add photos", !person.can_add_photos)}
+        {option("replace", "Replace enrollment")}
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {!person.can_add_photos && mode !== "replace"
+          ? "Adding photos isn't available for this person (enrolled before it was supported). Replace their enrollment once to enable it."
+          : mode === "add"
+            ? "Adds these photos (1 or more) to their existing enrollment. Only face embeddings are stored — never the photos."
+            : `Discards their current reference and re-enrolls from these photos only (at least ${minImages}).`}
+      </p>
     </div>
   )
 }

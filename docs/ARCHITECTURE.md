@@ -35,7 +35,9 @@ SQLite file (data/face_db.sqlite3)
 User uploads N images
   → detect_faces() per image
   → reject images with 0 or >1 faces
-  → average accepted embeddings, re-normalize
+  → sum accepted embeddings (src/enrollment.py), normalise the sum → reference
+  → store reference + embedding sum + count (never the photos)
+  (add photos later: sum += new embeddings, count += n, reference re-normalised — exact)
   → database.add_or_update_person()
 ```
 

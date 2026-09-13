@@ -28,6 +28,7 @@ FastAPI (api.py) — stateless HTTP layer     │
                        ▼
 src/embeddings.py   SCRFD face detection + ArcFace embedding (InsightFace buffalo_l, ONNX Runtime, CPU)
 src/matching.py     cosine similarity + Confirmed / Uncertain / Unknown decision
+src/enrollment.py   enrollment maths (embedding sum → normalised reference; exact "add photos")
 src/database.py     SQLite persistence (data/face_db.sqlite3)
 src/config.py       thresholds, retry limit, enrollment limits, paths
 ```
@@ -42,7 +43,8 @@ See `docs/ARCHITECTURE.md`, `docs/ML_PIPELINE.md` and `docs/DECISIONS.md` for mo
 
 ```
 Image → SCRFD face detection → align → ArcFace embedding (512-d, L2-normalised)
-   Enrollment:     2–5 photos, one face each → average the embeddings → re-normalise → store in SQLite
+   Enrollment:     2–5 photos, one face each → sum the embeddings → normalise → store reference + sum + count in SQLite
+   Add photos:     1–5 more photos later → add to the stored sum and count → re-normalise (exact update)
    Identification: each detected face → cosine similarity vs every enrolled person → best match → decision
 ```
 
@@ -135,19 +137,25 @@ streamlit run app.py
 - **Enroll:** add 2–5 photos of the same person (one face per photo), enter a name, **Save person**. **3 photos with
   slightly different angles or lighting are recommended** — on LFW this raised confident identification from 90.2%
   (2 photos) to 95.9% at the same threshold.
+- **Add photos later / replace:** typing a name that is already enrolled asks what saving should do —
+  **Add photos** (1–5 more photos update that person's stored reference; the default) or **Replace enrollment**
+  (discards it and re-enrolls from the new photos, 2–5 needed). Nothing is ever replaced silently. The original
+  enrollment photos are never stored — only the face embeddings and one thumbnail.
 - **Identify:** upload a photo; every detected face gets its own Confirmed / Uncertain / Unknown result with its similarity.
-- **People:** see everyone enrolled, with photo, sample count and date; delete a person (with confirmation).
+- **People:** see everyone enrolled, with photo, sample count and date; **Add photos** to someone (opens Enroll with
+  their name filled in); delete a person (with confirmation).
 
 ## API
 
 | Method & path | Purpose |
 |---|---|
 | `GET /api/status` | Thresholds, limits, enrolled count, slider range |
-| `GET /api/persons` | List enrolled people |
+| `GET /api/persons` | List enrolled people (incl. `can_add_photos`) |
 | `GET /api/persons/{id}/thumbnail` | A person's thumbnail |
 | `DELETE /api/persons/{id}` | Delete a person |
 | `POST /api/detect` | Count faces in one photo (Enroll page check) |
-| `POST /api/enroll` | `name` + `files` → enroll or update a person |
+| `POST /api/enroll` | `name` + `files` + `mode` (`new` — refused if the name exists — or `replace`) → enroll or re-enroll a person |
+| `POST /api/persons/{id}/photos` | `files` (1–5) → add photos to an existing person's enrollment |
 | `POST /api/identify` | `file` (+ optional `confirmed_threshold`, 0.45–0.90) → per-face decision, similarity and face crop (numbered left to right), plus the photo with status-coloured boxes |
 
 ## Evaluation
@@ -177,13 +185,15 @@ duplicated identities.
 ## Tests
 
 ```bash
-pytest                                   # matching / decision-policy and API display-helper unit tests
+pytest                                   # matching/decision policy, enrollment (new/add/replace), display helpers
 cd frontend && npm run typecheck && npm run build
 ```
 
 ## Privacy considerations
 
 - All processing is local; no image or embedding is sent to an external service.
+- Enrollment photos are not retained (also when adding photos later): only the face embeddings (reference, running
+  sum, count) and one thumbnail per person are stored.
 - The database and thumbnails (`data/`) and evaluation photos (`evaluation_data/`) are git-ignored.
 - The API listens on `127.0.0.1` and has no authentication — do not expose it on a network.
 - Deleting a person removes their embedding; their thumbnail file currently stays in `data/thumbnails/`.
@@ -197,7 +207,7 @@ How the system behaves when recognition cannot or should not succeed (details, s
 | Case | Behaviour |
 |---|---|
 | **No face detected** (blank image, background only, very tight crop) | "No face detected. Please upload a clearer image." — no result is guessed and no retry attempt is used. |
-| **Multiple faces** | Identify: every face gets its own independent result. Enroll: a photo with more than one face is rejected ("Multiple faces"); saving needs at least 2 single-face photos. |
+| **Multiple faces** | Identify: every face gets its own independent result. Enroll: a photo with more than one face is rejected ("Multiple faces"); saving a new person needs at least 2 single-face photos (1 when adding photos to an existing person). |
 | **Unknown / low similarity** (< 0.45) | "No enrolled identity matched" with an **Enroll this person** action — an identity is never created automatically. |
 | **Uncertain match** (0.45 – 0.62) | The closest candidate is shown for context only, never as a confirmed identity, and another photo is requested. Each new photo uses one attempt; after 3 the flow locks ("Identity could not be confidently verified") until **Try again**. |
 | **Difficult pose / poor conditions** | Large head turns can drop below 0.45 (a head-turned photo scored 0.42 → Unknown). Blur, darker/brighter lighting and covered eyes or mouth lower the similarity; on the real face these variants still matched (0.77–0.95). Very small, low-resolution faces fall to Unknown rather than a wrong match. |
@@ -211,6 +221,9 @@ How the system behaves when recognition cannot or should not succeed (details, s
   AI-generated faces — not yet on phone/webcam photos, look-alikes, twins or relatives.
 - Large head turns can be missed (0.42 → Unknown in testing); tightly cropped faces are not detected.
 - Look-alike faces are the main false-accept risk.
+- **Add photos** trusts the user: new photos are not checked against the person's existing reference, so adding
+  someone else's photo would dilute it (Replace enrollment fixes it). People enrolled before adding photos existed
+  have no stored sum and are replace-only until re-enrolled once.
 - Linear-scan matching — fine for a small number of people; FAISS or similar would be needed at scale.
 
 ## Future improvements
@@ -234,6 +247,7 @@ face-recognition-system/
 ├── src/
 │   ├── config.py           # thresholds, retry limit, enrollment limits, paths
 │   ├── embeddings.py       # SCRFD + ArcFace (InsightFace) wrapper
+│   ├── enrollment.py       # enrollment maths: embedding sum → normalised reference
 │   ├── matching.py         # cosine similarity + three-tier decision
 │   └── database.py         # SQLite persistence
 ├── frontend/               # Next.js app (Dashboard, Enroll, Identify, People)

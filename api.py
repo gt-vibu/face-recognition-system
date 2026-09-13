@@ -26,6 +26,7 @@ from PIL import Image
 
 from src import config, database
 from src.embeddings import _get_app, detect_faces
+from src.enrollment import embedding_sum, reference_from_sum
 from src.matching import MatchStatus, best_match
 
 
@@ -109,6 +110,7 @@ def status():
 
 @app.get("/api/persons")
 def list_persons():
+    can_add = database.ids_supporting_add_photos()
     return [
         {
             "person_id": person_id,
@@ -116,6 +118,8 @@ def list_persons():
             "num_samples": num_samples,
             "created_at": created_at,
             "has_thumbnail": bool(thumb and os.path.exists(thumb)),
+            # False for people enrolled before embedding sums were stored: replace-only.
+            "can_add_photos": person_id in can_add,
         }
         for person_id, name, _, num_samples, created_at, thumb in database.get_all_persons()
     ]
@@ -144,46 +148,95 @@ def detect(file: UploadFile = File(...)):
     return {"filename": file.filename, "face_count": len(faces)}
 
 
-@app.post("/api/enroll")
-def enroll(name: str = Form(...), files: List[UploadFile] = File(...)):
-    """Mirrors pages/1_Enroll.py: first MAX images, single-face only, averaged embedding."""
-    name_clean = name.strip()
-    files = files[: config.MAX_ENROLLMENT_IMAGES]
-
-    accepted_embeddings, first_good_image, per_file = [], None, []
-    for file in files:
+def _accepted_embeddings(files: List[UploadFile]):
+    """Same rules as pages/1_Enroll.py: first MAX images, only photos with exactly one face are used."""
+    accepted, first_good_image, per_file = [], None, []
+    for file in files[: config.MAX_ENROLLMENT_IMAGES]:
         image, _, faces = _load(file)
-        accepted = len(faces) == 1
-        per_file.append({"filename": file.filename, "face_count": len(faces), "accepted": accepted})
-        if accepted:
-            accepted_embeddings.append(faces[0].embedding)
+        ok = len(faces) == 1
+        per_file.append({"filename": file.filename, "face_count": len(faces), "accepted": ok})
+        if ok:
+            accepted.append(faces[0].embedding)
             if first_good_image is None:
                 first_good_image = image
+    return accepted, first_good_image, per_file
 
+
+@app.post("/api/enroll")
+def enroll(name: str = Form(...), files: List[UploadFile] = File(...), mode: str = Form("new")):
+    """
+    mode="new": enroll a new person (fails if the name is already enrolled — never replaces silently).
+    mode="replace": discard an existing person's stored reference and re-enroll from these photos.
+    Both need MIN–MAX valid single-face photos. To add photos instead, use POST /api/persons/{id}/photos.
+    """
+    if mode not in ("new", "replace"):
+        raise HTTPException(status_code=400, detail="mode must be 'new' or 'replace'.")
+    name_clean = name.strip()
     if name_clean == "":
         raise HTTPException(status_code=400, detail="Enter a name to continue.")
-    if len(accepted_embeddings) < config.MIN_ENROLLMENT_IMAGES:
+    exists = database.name_exists(name_clean)
+    if mode == "new" and exists:
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{name_clean}' is already enrolled. Choose 'Add photos' to add to their enrollment, "
+            "or 'Replace enrollment' to start over.",
+        )
+    if mode == "replace" and not exists:
+        raise HTTPException(status_code=404, detail=f"'{name_clean}' is not enrolled, so there is nothing to replace.")
+
+    accepted, first_good_image, per_file = _accepted_embeddings(files)
+    if len(accepted) < config.MIN_ENROLLMENT_IMAGES:
         raise HTTPException(
             status_code=400,
             detail=f"Need at least {config.MIN_ENROLLMENT_IMAGES} valid single-face images "
-            f"(got {len(accepted_embeddings)}).",
+            f"(got {len(accepted)}).",
         )
 
-    updated = database.name_exists(name_clean)
-    avg_embedding = np.mean(np.stack(accepted_embeddings), axis=0)
-    avg_embedding = avg_embedding / (np.linalg.norm(avg_embedding) + 1e-10)
-
+    total = embedding_sum(accepted)
     thumbnail_path = os.path.join(config.THUMB_DIR, f"{uuid.uuid4().hex}.jpg")
     first_good_image.save(thumbnail_path)
 
     person_id = database.add_or_update_person(
-        name_clean, avg_embedding, len(accepted_embeddings), thumbnail_path
+        name_clean, reference_from_sum(total), len(accepted), thumbnail_path, embedding_sum=total
     )
     return {
         "person_id": person_id,
         "name": name_clean,
-        "num_samples": len(accepted_embeddings),
-        "updated": updated,
+        "num_samples": len(accepted),
+        "updated": exists,
+        "mode": mode,
+        "files": per_file,
+    }
+
+
+@app.post("/api/persons/{person_id}/photos")
+def add_photos(person_id: int, files: List[UploadFile] = File(...)):
+    """
+    Add 1–MAX valid single-face photos to an existing person's enrollment. Exact running update:
+    the stored embedding sum and sample count grow, and the reference is re-normalised from the sum.
+    The photos themselves are not stored; the existing thumbnail is kept.
+    """
+    persons = {p[0]: p[1] for p in database.get_all_persons()}
+    if person_id not in persons:
+        raise HTTPException(status_code=404, detail="Person not found.")
+    if person_id not in database.ids_supporting_add_photos():
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{persons[person_id]}' was enrolled before adding photos was supported. "
+            "Replace their enrollment once to enable adding photos.",
+        )
+    accepted, _, per_file = _accepted_embeddings(files)
+    if not accepted:
+        raise HTTPException(status_code=400, detail="None of the photos has exactly one detectable face.")
+    try:
+        total = database.add_photos_to_person(person_id, embedding_sum(accepted), len(accepted))
+    except (KeyError, database.ReplaceOnlyEnrollmentError):  # deleted/replaced concurrently
+        raise HTTPException(status_code=409, detail="This person's enrollment changed — reload and try again.")
+    return {
+        "person_id": person_id,
+        "name": persons[person_id],
+        "added": len(accepted),
+        "num_samples": total,
         "files": per_file,
     }
 

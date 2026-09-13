@@ -26,7 +26,7 @@ If the best similarity falls in the uncertain band, the system does **not** pres
 
 ## Enrollment aggregation
 
-Each accepted enrollment image's embedding is averaged into a single representative vector per person (then re-normalized), rather than storing every raw sample. This reduces the noise contributed by any single lower-quality photo at minimal implementation cost.
+Each accepted enrollment image's embedding is combined into a single representative vector per person — the normalised sum of the embeddings, which points in the same direction as the normalised average — rather than storing every raw sample. This reduces the noise contributed by any single lower-quality photo at minimal implementation cost. The un-normalised sum and the sample count are stored alongside the reference, so photos added later update it exactly (`src/enrollment.py`); the photos themselves are never stored.
 
 ## Multi-face identification
 
@@ -44,7 +44,7 @@ Each accepted enrollment image's embedding is averaged into a single representat
 | Occlusion (glasses, mask, hand) | Similarity drop, possible false Unknown | Documented limitation; occlusion-robust models exist but are out of scope here |
 | Low resolution | Noisier embeddings, less reliable scores | Could add a minimum-resolution check on upload |
 | Visually similar people (e.g. siblings) | Known hard case — risk of false Confirmed/Uncertain overlap | Documented as an explicit limitation; would need additional signals (more enrollment photos, liveness, etc.) at scale |
-| Duplicate enrollment (same name) | Treated as an update to that person's stored embedding, with a warning shown before saving | — |
+| Duplicate enrollment (same name) | Never replaced silently: the user chooses **Add photos** (exact update of the stored reference) or **Replace enrollment** | — |
 | Empty database | Any identification attempt returns Unknown | Handled explicitly in `matching.best_match` |
 
 Each of these should be spot-checked manually before submission and the *actual observed* behavior (not just the expected behavior) noted here or in `docs/EVALUATION.md`.

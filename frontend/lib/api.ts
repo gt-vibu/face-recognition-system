@@ -18,6 +18,18 @@ export type Person = {
   num_samples: number
   created_at: string
   has_thumbnail: boolean
+  /** False for people enrolled before embedding sums were stored — they can only be replaced. */
+  can_add_photos: boolean
+}
+
+export type EnrollMode = "new" | "replace"
+
+export type AddPhotosResponse = {
+  person_id: number
+  name: string
+  added: number
+  num_samples: number
+  files: { filename: string; face_count: number; accepted: boolean }[]
 }
 
 export type MatchStatus = "confirmed" | "uncertain" | "unknown"
@@ -45,6 +57,7 @@ export type EnrollResponse = {
   name: string
   num_samples: number
   updated: boolean
+  mode: EnrollMode
   files: { filename: string; face_count: number; accepted: boolean }[]
 }
 
@@ -89,10 +102,17 @@ export const api = {
       method: "POST",
       body: formWith([["file", file]]),
     }),
-  enroll: (name: string, files: File[]) =>
+  // mode "new" is refused for an existing name; "replace" re-enrolls an existing person.
+  enroll: (name: string, files: File[], mode: EnrollMode = "new") =>
     request<EnrollResponse>("/api/enroll", {
       method: "POST",
-      body: formWith([["name", name], ...files.map((f): [string, File] => ["files", f])]),
+      body: formWith([["name", name], ["mode", mode], ...files.map((f): [string, File] => ["files", f])]),
+    }),
+  // Adds photos to an existing person's enrollment (exact running update on the server).
+  addPhotos: (personId: number, files: File[]) =>
+    request<AddPhotosResponse>(`/api/persons/${personId}/photos`, {
+      method: "POST",
+      body: formWith(files.map((f): [string, File] => ["files", f])),
     }),
   // confirmedThreshold: evaluation/testing override. Omitted => backend uses the configured default.
   identify: (file: File, confirmedThreshold?: number) =>
