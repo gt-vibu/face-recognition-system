@@ -37,7 +37,7 @@ src/config.py       thresholds, retry limit, enrollment limits, paths
 - `api.py` contains no recognition logic of its own — it calls the same `src/` functions as the Streamlit pages.
 - Both UIs share `data/face_db.sqlite3`, so people enrolled in one appear in the other.
 
-See `docs/ARCHITECTURE.md`, `docs/ML_PIPELINE.md` and `docs/DECISIONS.md` for more detail.
+See `docs/ARCHITECTURE.md` and `docs/ML_PIPELINE.md` for more detail.
 
 ## ML pipeline
 
@@ -256,7 +256,7 @@ face-recognition-system/
 │   └── lib/api.ts          # typed client for api.py
 ├── evaluation/run_evaluation.py
 ├── tests/test_matching.py
-├── docs/                   # ARCHITECTURE, ML_PIPELINE, EVALUATION, DECISIONS
+├── docs/                   # ARCHITECTURE, ML_PIPELINE, EVALUATION
 ├── data/                   # git-ignored: database + thumbnails
 └── evaluation_data/        # git-ignored: evaluation photos
 ```

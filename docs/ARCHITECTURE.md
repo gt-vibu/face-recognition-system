@@ -2,8 +2,8 @@
 
 ## System overview
 
-The project started as a single-process Streamlit application (Decision 001). Once that version was working and tested,
-a Next.js UI was added on top of a thin FastAPI layer (Decision 008). Both UIs call the same `src/` code and share one
+The project started as a single-process Streamlit application. Once that version was working and tested,
+a Next.js UI was added on top of a thin FastAPI layer. Both UIs call the same `src/` code and share one
 SQLite database; the Streamlit app is kept as an optional UI.
 
 ```
