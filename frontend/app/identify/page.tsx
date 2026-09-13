@@ -195,20 +195,42 @@ export default function IdentifyPage() {
                 {busy ? <LoaderCircle className="size-4 animate-spin" /> : <Plus className="size-4" />}
                 <span className="text-sm">{busy ? "Analysing photo…" : "Add a photo to identify"}</span>
               </label>
+            ) : result.faces.length > 1 ? (
+              // Group photo: summary, the full-width photo with a legend, then one card per face.
+              <div className={cn("mt-4 flex flex-col gap-4", busy && "opacity-60")}>
+                <FaceSummary faces={result.faces} />
+                {result.annotated_image && (
+                  <figure className="flex flex-col gap-2">
+                    <AnnotatedPhoto src={result.annotated_image} />
+                    <figcaption className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                      {(Object.keys(tones) as MatchStatus[]).map((s) => (
+                        <span key={s} className="flex items-center gap-1.5">
+                          <span className={cn("size-2 rounded-full", tones[s].dot)} /> {tones[s].label}
+                        </span>
+                      ))}
+                      <span>Faces are numbered left to right</span>
+                    </figcaption>
+                  </figure>
+                )}
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {result.faces.map((face) => (
+                    <div key={face.index} className={cn("rounded-md border border-border border-t-[3px] p-4", tones[face.status].edge)}>
+                      <FaceResultRow
+                        face={face}
+                        showIndex
+                        faceImage={face.face_image}
+                        person={face.person_name ? personByName.get(face.person_name) : undefined}
+                        lower={status?.uncertain_lower_bound}
+                        confirmed={result.confirmed_threshold}
+                        onEnroll={goToEnrollment}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
             ) : (
               <div className={cn("mt-4 grid items-start gap-5 md:grid-cols-2", busy && "opacity-60")}>
-                {result.annotated_image && (
-                  // Bounded frame: the face boxes are drawn into the image by the API, so object-contain scales
-                  // them with it. Tall photos are capped in height and letterboxed, never cropped.
-                  <div className="flex items-center justify-center overflow-hidden rounded-md border border-border bg-stone-100">
-                    {/* eslint-disable-next-line @next/next/no-img-element -- server-rendered data URL */}
-                    <img
-                      src={result.annotated_image}
-                      alt="Uploaded photo with detected faces marked"
-                      className="block h-auto max-h-[360px] w-full object-contain md:max-h-[440px]"
-                    />
-                  </div>
-                )}
+                {result.annotated_image && <AnnotatedPhoto src={result.annotated_image} />}
                 <div className="flex flex-col divide-y divide-border">
                   {result.faces.length === 0 ? (
                     <p className="flex items-center gap-1.5 text-sm text-red-700">
@@ -304,15 +326,78 @@ export default function IdentifyPage() {
   )
 }
 
-const tones: Record<MatchStatus, { icon: typeof Check; title: string; text: string }> = {
-  confirmed: { icon: Check, title: "Identity confirmed", text: "text-green-700" },
-  uncertain: { icon: TriangleAlert, title: "Identity not confirmed", text: "text-amber-700" },
-  unknown: { icon: CircleX, title: "No enrolled identity matched", text: "text-red-700" },
+// `dot`/`edge` match the box colours the API draws on the photo (green / amber / red).
+const tones: Record<
+  MatchStatus,
+  { icon: typeof Check; title: string; label: string; text: string; dot: string; edge: string }
+> = {
+  confirmed: {
+    icon: Check,
+    title: "Identity confirmed",
+    label: "Confirmed",
+    text: "text-green-700",
+    dot: "bg-green-600",
+    edge: "border-t-green-600",
+  },
+  uncertain: {
+    icon: TriangleAlert,
+    title: "Identity not confirmed",
+    label: "Uncertain",
+    text: "text-amber-700",
+    dot: "bg-amber-600",
+    edge: "border-t-amber-600",
+  },
+  unknown: {
+    icon: CircleX,
+    title: "No enrolled identity matched",
+    label: "Unknown",
+    text: "text-red-700",
+    dot: "bg-red-600",
+    edge: "border-t-red-600",
+  },
+}
+
+// Bounded frame: the face boxes are drawn into the image by the API, so object-contain scales
+// them with it. Tall photos are capped in height and letterboxed, never cropped.
+function AnnotatedPhoto({ src }: { src: string }) {
+  return (
+    <div className="flex items-center justify-center overflow-hidden rounded-md border border-border bg-stone-100">
+      {/* eslint-disable-next-line @next/next/no-img-element -- server-rendered data URL */}
+      <img
+        src={src}
+        alt="Uploaded photo with detected faces marked"
+        className="block h-auto max-h-[360px] w-full object-contain md:max-h-[440px]"
+      />
+    </div>
+  )
+}
+
+function FaceSummary({ faces }: { faces: FaceResult[] }) {
+  const count = (s: MatchStatus) => faces.filter((f) => f.status === s).length
+  const cells = [
+    { label: "Faces detected", value: faces.length, text: "text-foreground" },
+    ...(["confirmed", "uncertain", "unknown"] as MatchStatus[]).map((s) => ({
+      label: tones[s].label,
+      value: count(s),
+      text: count(s) > 0 ? tones[s].text : "text-muted-foreground",
+    })),
+  ]
+  return (
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      {cells.map((c) => (
+        <div key={c.label} className="rounded-md border border-border px-3 py-2">
+          <p className="text-xs text-muted-foreground">{c.label}</p>
+          <p className={cn("text-lg font-semibold tabular-nums", c.text)}>{c.value}</p>
+        </div>
+      ))}
+    </div>
+  )
 }
 
 function FaceResultRow({
   face,
   showIndex,
+  faceImage,
   person,
   lower,
   confirmed,
@@ -320,6 +405,7 @@ function FaceResultRow({
 }: {
   face: FaceResult
   showIndex: boolean
+  faceImage?: string | null
   person?: Person
   lower?: number
   confirmed: number
@@ -327,13 +413,34 @@ function FaceResultRow({
 }) {
   const tone = tones[face.status]
   const Icon = tone.icon
+  const heading = (
+    <p className={cn("flex items-center gap-1.5 text-sm font-medium", tone.text)}>
+      <Icon className="size-4 shrink-0" />
+      {showIndex && <span className="font-normal text-muted-foreground">Face {face.index} ·</span>}
+      {tone.title}
+    </p>
+  )
   return (
     <div className="flex flex-col gap-3 py-4 first:pt-0 last:pb-0">
-      <p className={cn("flex items-center gap-1.5 text-sm font-medium", tone.text)}>
-        <Icon className="size-4" />
-        {showIndex && <span className="font-normal text-muted-foreground">Face {face.index} ·</span>}
-        {tone.title}
-      </p>
+      {faceImage ? (
+        <div className="flex items-center gap-3">
+          {/* eslint-disable-next-line @next/next/no-img-element -- server-rendered data URL */}
+          <img
+            src={faceImage}
+            alt={`Face ${face.index}`}
+            className="size-12 shrink-0 rounded-md border border-border object-cover"
+          />
+          <div className="min-w-0">
+            <p className="text-xs text-muted-foreground">Face {face.index}</p>
+            <p className={cn("flex items-start gap-1.5 text-sm font-medium", tone.text)}>
+              <Icon className="mt-0.5 size-4 shrink-0" />
+              {tone.title}
+            </p>
+          </div>
+        </div>
+      ) : (
+        heading
+      )}
 
       {face.status !== "unknown" && face.person_name && (
         <div className="flex items-center gap-3">

@@ -148,7 +148,7 @@ streamlit run app.py
 | `DELETE /api/persons/{id}` | Delete a person |
 | `POST /api/detect` | Count faces in one photo (Enroll page check) |
 | `POST /api/enroll` | `name` + `files` → enroll or update a person |
-| `POST /api/identify` | `file` (+ optional `confirmed_threshold`, 0.45–0.90) → per-face decision, similarity, annotated image |
+| `POST /api/identify` | `file` (+ optional `confirmed_threshold`, 0.45–0.90) → per-face decision, similarity and face crop (numbered left to right), plus the photo with status-coloured boxes |
 
 ## Evaluation
 
@@ -177,7 +177,7 @@ duplicated identities.
 ## Tests
 
 ```bash
-pytest                                   # matching / decision-policy unit tests
+pytest                                   # matching / decision-policy and API display-helper unit tests
 cd frontend && npm run typecheck && npm run build
 ```
 

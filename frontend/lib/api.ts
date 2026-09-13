@@ -27,6 +27,8 @@ export type FaceResult = {
   status: MatchStatus
   person_name: string | null
   similarity: number
+  /** Small JPEG crop of this face (data URL) for the per-face result cards. */
+  face_image: string | null
 }
 
 export type IdentifyResponse = {
