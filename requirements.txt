@@ -5,3 +5,7 @@ opencv-python-headless>=4.9
 numpy>=1.24
 Pillow>=10.0
 pytest>=7.4
+# HTTP API for the Next.js frontend (api.py)
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9

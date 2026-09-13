@@ -1,156 +1,231 @@
 # Face Recognition Identification System
 
-A local, offline face enrollment and identification system built with ArcFace embeddings and cosine similarity — developed for the Code Nimbus Solutions AI/ML Internship assignment.
+A local, offline face enrollment and identification system built with ArcFace embeddings and cosine similarity —
+developed for the Code Nimbus Solutions AI/ML Internship assignment.
 
 ## Overview
 
-The system lets you enroll people from a few photos each, and later identify new photos against that enrolled database. Every decision is graded into one of three tiers — **Confirmed Match**, **Uncertain Match**, or **Unknown** — rather than a naive "always return the closest name" approach, so the system can honestly say "I'm not sure" or "I don't know this person."
+Enroll people from a few photos each, then identify faces in new photos against that enrolled database. Every face
+gets one of three decisions — **Confirmed Match**, **Uncertain Match** or **Unknown** — instead of always returning the
+closest name, so the system can honestly say "I'm not sure" or "I don't know this person."
 
 Everything runs locally: no cloud APIs, no external calls, $0 cost.
 
-## Features
-
-- Face detection + ArcFace embedding generation (InsightFace, CPU-only)
-- Cosine-similarity based 1:N matching against enrolled identities
-- Tiered decision policy: **Confirmed / Uncertain / Unknown** (see below)
-- Bounded retry policy for uncertain matches (no infinite retry loops)
-- Multi-face identification (each face in an image handled independently)
-- Enrollment, identification, and people-management pages (Streamlit)
-- Delete-enrolled-person support
-- Basic evaluation script producing genuine/impostor/unknown score distributions and FAR/FRR
-
 ## Architecture
 
+The main application is a **Next.js** web UI backed by a small **FastAPI** service that calls the Python ML code
+directly. The original **Streamlit** app is still included and uses the same code and database.
+
 ```
-Image upload
-     ↓
-Face detection (InsightFace / SCRFD)
-     ↓
-Crop + align
-     ↓
-ArcFace embedding (512-d, L2-normalized)
-     ↓
-   ┌─────────────┴─────────────┐
-   ↓                           ↓
-Enrollment path           Identification path
-(average embeddings,      (cosine similarity vs.
- store in SQLite)          every stored embedding)
-                                ↓
-                      Best match + tiered threshold check
-                                ↓
-                 Confirmed Match / Uncertain Match / Unknown
+Next.js UI (frontend/)          Streamlit UI (app.py, pages/) — optional
+   Dashboard · Enroll ·            Enroll · Identify · People
+   Identify · People                        │
+        │  /api/* (proxied by Next.js)      │
+        ▼                                   │
+FastAPI (api.py) — stateless HTTP layer     │
+        │                                   │
+        └──────────────┬────────────────────┘
+                       ▼
+src/embeddings.py   SCRFD face detection + ArcFace embedding (InsightFace buffalo_l, ONNX Runtime, CPU)
+src/matching.py     cosine similarity + Confirmed / Uncertain / Unknown decision
+src/database.py     SQLite persistence (data/face_db.sqlite3)
+src/config.py       thresholds, retry limit, enrollment limits, paths
 ```
 
-See `docs/ARCHITECTURE.md` and `docs/ML_PIPELINE.md` for more detail.
+- The browser only talks to Next.js; `next.config.ts` proxies `/api/*` to FastAPI, so no CORS setup is needed.
+- `api.py` contains no recognition logic of its own — it calls the same `src/` functions as the Streamlit pages.
+- Both UIs share `data/face_db.sqlite3`, so people enrolled in one appear in the other.
 
-## Model used
+See `docs/ARCHITECTURE.md`, `docs/ML_PIPELINE.md` and `docs/DECISIONS.md` for more detail.
 
-**InsightFace `buffalo_l`** model pack — a SCRFD detector paired with an ArcFace recognition model, run via ONNX Runtime on CPU. This is a widely-used, modern, fully offline, pretrained face-recognition approach; no training was performed (see `docs/ML_PIPELINE.md` for why that's the correct approach here).
+## ML pipeline
 
-## Similarity metric & terminology
+```
+Image → SCRFD face detection → align → ArcFace embedding (512-d, L2-normalised)
+   Enrollment:     2–5 photos, one face each → average the embeddings → re-normalise → store in SQLite
+   Identification: each detected face → cosine similarity vs every enrolled person → best match → decision
+```
 
-**Cosine similarity** between L2-normalized embeddings. We deliberately call this "similarity," never "confidence" — cosine similarity is not a calibrated probability, and labeling it a confidence percentage would misrepresent what the number means.
+- **Model:** InsightFace `buffalo_l` (SCRFD detector + ArcFace recognition model), pretrained, inference only — no training.
+- **Metric:** cosine similarity. We call it **similarity, never "confidence"** — it is not a calibrated probability.
 
 ## Recognition decision policy
 
-| Similarity range | Status | Behavior |
+| Similarity | Decision | Behaviour |
 |---|---|---|
-| `>= CONFIRMED_THRESHOLD` | **Confirmed Match** | Show the person's name and score. No retry needed. |
-| `[UNCERTAIN_LOWER_BOUND, CONFIRMED_THRESHOLD)` | **Uncertain Match** | Do NOT present a confirmed identity. Ask for another image. Bounded to `MAX_IDENTIFICATION_ATTEMPTS` (default 3) attempts total. |
-| `< UNCERTAIN_LOWER_BOUND` | **Unknown** | No enrolled identity matched. Offer an "Enroll This Person" action — never auto-creates an identity. |
+| `≥ 0.62` (`CONFIRMED_THRESHOLD`) | **Confirmed Match** | Shows the person's name and similarity. |
+| `0.45 – 0.62` (`UNCERTAIN_LOWER_BOUND`–`CONFIRMED_THRESHOLD`) | **Uncertain Match** | The closest candidate is shown for context only — never as a confirmed identity. Asks for another photo. |
+| `< 0.45` | **Unknown** | No enrolled identity matched. Offers "Enroll this person" — never creates an identity automatically. |
 
-The two threshold values live in `src/config.py` as clearly-commented constants — they are **starting defaults**, not scientifically fixed values, and must be validated against your own evaluation data before being trusted (see "Threshold selection" below).
+The values live in `src/config.py`. 0.62 is a deliberately conservative operating point: on a 50-person sample of
+the real-photo LFW dataset it gave **90.2% confident identification with zero wrong-person confirmations and zero
+strangers confirmed**; the other 9.8% were Uncertain (retry). Lower thresholds scored higher on LFW but produced
+wrong-person confirmations on synthetic look-alikes, so borderline cases go to Uncertain instead. See
+`docs/EVALUATION.md` for the numbers and reasoning.
 
-## Threshold selection
+### Bounded retries for Uncertain matches
 
-1. Run `evaluation/run_evaluation.py` against a small self-collected dataset (see its docstring for the expected folder layout).
-2. Look at where genuine scores cluster vs. where impostor/unknown scores cluster.
-3. Pick `CONFIRMED_THRESHOLD` above the impostor cluster and `UNCERTAIN_LOWER_BOUND` a bit further below it, leaving a genuine "uncertain" band in between.
-4. Update `src/config.py` with the validated values and record the reasoning in `docs/DECISIONS.md`.
+- An Uncertain result uses **one attempt per newly uploaded photo**; re-renders or reruns never count.
+- Confirmed and Unknown results reset the counter; a photo with no face does not use an attempt.
+- After **3** Uncertain attempts (`MAX_IDENTIFICATION_ATTEMPTS`) the flow locks with
+  "Identity could not be confidently verified" until **Try again**.
+- The counter lives in the browser (React state in Next.js, `session_state` in Streamlit) — reloading the page resets it.
 
-**Actual results from this run:** see `docs/EVALUATION.md` — filled in only after actually running the evaluation script, never fabricated.
+### Evaluation threshold slider (testing only)
+
+Both UIs have a slider to try other Confirmed thresholds without editing `config.py`:
+
+- **Next.js:** Identify page → **"Evaluation threshold — testing only"** (bottom of the panel).
+- **Streamlit:** Identify page → **"Advanced — evaluation threshold (testing only)"**.
+
+It ranges from 0.45 to 0.90 (default 0.62) and only moves the **Confirmed** boundary; the Uncertain lower bound stays
+0.45. In Next.js the value is sent with the next uploaded photo (`confirmed_threshold` form field) and FastAPI passes it
+to `src/matching.best_match` — the decision is always made by the backend. A notice is shown while it differs from the
+default. It lasts for the browser tab only and never changes `config.py`.
 
 ## Installation
 
+Requirements: **Python 3.10 or 3.11** (newer/pre-release versions may lack InsightFace/ONNX Runtime wheels) and
+**Node.js 20+**.
+
 ```bash
-git clone <this-repo-url>
+git clone https://github.com/gt-vibu/face-recognition-system.git
 cd face-recognition-system
-python3 -m venv venv
-source venv/bin/activate    # Windows: venv\Scripts\activate
+python -m venv .venv
+.venv\Scripts\activate          # macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
+
+cd frontend
+npm install
 ```
 
-First run will download the InsightFace `buffalo_l` model weights automatically (requires internet only for this one-time download).
+The first run downloads the InsightFace `buffalo_l` weights (~300 MB) to `~/.insightface` — internet is needed only
+for this one-time download.
 
-## Usage
+**Windows note:** `pip install insightface` may need to compile native code. If it fails with a compiler error,
+install the free **Microsoft C++ Build Tools** (workload "Desktop development with C++") and run
+`pip install -r requirements.txt` again.
+
+## Running
+
+Start the API (from the repository root, with the virtual environment active):
+
+```bash
+uvicorn api:app --port 8000
+```
+
+Start the web UI (in a second terminal):
+
+```bash
+cd frontend
+npm run dev
+```
+
+Open **http://localhost:3000**. If port 3000 is busy, Next.js picks the next free port. To point the UI at an API on
+a different address, set `FACE_API_URL` (default `http://127.0.0.1:8000`).
+
+Optional — the original Streamlit UI (no API needed):
 
 ```bash
 streamlit run app.py
 ```
 
-- **Enroll:** go to the Enroll page, enter a name, upload 2–5 clear single-person photos.
-- **Identify:** go to the Identify page, upload a photo. Each detected face gets its own Confirmed/Uncertain/Unknown result.
-- **People:** view and delete enrolled identities.
+### Using the app
+
+- **Enroll:** add 2–5 photos of the same person (one face per photo), enter a name, **Save person**. **3 photos with
+  slightly different angles or lighting are recommended** — on LFW this raised confident identification from 90.2%
+  (2 photos) to 95.9% at the same threshold.
+- **Identify:** upload a photo; every detected face gets its own Confirmed / Uncertain / Unknown result with its similarity.
+- **People:** see everyone enrolled, with photo, sample count and date; delete a person (with confirmation).
+
+## API
+
+| Method & path | Purpose |
+|---|---|
+| `GET /api/status` | Thresholds, limits, enrolled count, slider range |
+| `GET /api/persons` | List enrolled people |
+| `GET /api/persons/{id}/thumbnail` | A person's thumbnail |
+| `DELETE /api/persons/{id}` | Delete a person |
+| `POST /api/detect` | Count faces in one photo (Enroll page check) |
+| `POST /api/enroll` | `name` + `files` → enroll or update a person |
+| `POST /api/identify` | `file` (+ optional `confirmed_threshold`, 0.45–0.90) → per-face decision, similarity, annotated image |
 
 ## Evaluation
 
-See `docs/EVALUATION.md` for the dataset description, method, and actual results (accuracy, FAR, FRR) — run via `python evaluation/run_evaluation.py`.
+Run `python evaluation/run_evaluation.py` (see its docstring for the `evaluation_data/` layout). `docs/EVALUATION.md`
+has the real-person results (50 LFW people, 250 photos), the in-app validation (one real person plus AI-generated
+faces), the threshold sweep, robustness tests and failure cases — and the caveat that the synthetic faces include
+duplicated identities.
 
-## Failure cases
+## Tests
 
-Documented in `docs/ML_PIPELINE.md`, including: no face detected, multiple faces, poor lighting, side profiles, occlusion (glasses/masks), low resolution, visually similar people, and duplicate enrollment attempts — each with expected vs. observed behavior and a possible improvement.
+```bash
+pytest                                   # matching / decision-policy unit tests
+cd frontend && npm run typecheck && npm run build
+```
 
 ## Privacy considerations
 
-- All processing happens locally; no image or embedding is ever sent to an external service.
-- Face images, thumbnails, and the SQLite database are stored under `data/`, which is excluded from git via `.gitignore`.
-- Any evaluation photos live under `evaluation_data/`, also git-ignored.
-- A "Delete Person" action removes an enrolled identity's stored data.
-- This is a demo/assignment project, not a production biometric system — it has no liveness/anti-spoofing detection and should not be used for real access-control decisions without further security review.
+- All processing is local; no image or embedding is sent to an external service.
+- The database and thumbnails (`data/`) and evaluation photos (`evaluation_data/`) are git-ignored.
+- The API listens on `127.0.0.1` and has no authentication — do not expose it on a network.
+- Deleting a person removes their embedding; their thumbnail file currently stays in `data/thumbnails/`.
+- This is an assignment/demo project, not a production biometric system: there is no liveness / anti-spoofing check.
+
+## Failure cases
+
+How the system behaves when recognition cannot or should not succeed (details, scores and test results are in
+`docs/EVALUATION.md`, sections 5 and 7):
+
+| Case | Behaviour |
+|---|---|
+| **No face detected** (blank image, background only, very tight crop) | "No face detected. Please upload a clearer image." — no result is guessed and no retry attempt is used. |
+| **Multiple faces** | Identify: every face gets its own independent result. Enroll: a photo with more than one face is rejected ("Multiple faces"); saving needs at least 2 single-face photos. |
+| **Unknown / low similarity** (< 0.45) | "No enrolled identity matched" with an **Enroll this person** action — an identity is never created automatically. |
+| **Uncertain match** (0.45 – 0.62) | The closest candidate is shown for context only, never as a confirmed identity, and another photo is requested. Each new photo uses one attempt; after 3 the flow locks ("Identity could not be confidently verified") until **Try again**. |
+| **Difficult pose / poor conditions** | Large head turns can drop below 0.45 (a head-turned photo scored 0.42 → Unknown). Blur, darker/brighter lighting and covered eyes or mouth lower the similarity; on the real face these variants still matched (0.77–0.95). Very small, low-resolution faces fall to Unknown rather than a wrong match. |
+| **Look-alike faces** | The main false-accept risk: in testing, near-duplicate AI-generated faces were confirmed as each other. No wrong-person confirmations occurred on the 50 real LFW people. |
+| **Invalid or non-image upload** | Only JPG/PNG can be selected ("Only JPG or PNG images are supported"); the API rejects unreadable files with HTTP 400. |
+| **Empty database** | Every face is reported as Unknown (similarity 0.00) until someone is enrolled. |
 
 ## Limitations
 
-- Small evaluation dataset (see `docs/EVALUATION.md`) — thresholds are validated against a handful of people, not a large benchmark.
-- Sensitive to poor lighting, heavy occlusion, and extreme pose.
-- No liveness detection (a photo of a photo could in principle be presented).
-- Linear-scan matching — fine for a handful of enrolled people, would need an approximate-nearest-neighbor index (e.g. FAISS) at larger scale.
+- Evaluated on 50 real LFW people (mostly frontal press photos, not look-alikes), one real person's selfies and
+  AI-generated faces — not yet on phone/webcam photos, look-alikes, twins or relatives.
+- Large head turns can be missed (0.42 → Unknown in testing); tightly cropped faces are not detected.
+- Look-alike faces are the main false-accept risk.
+- Linear-scan matching — fine for a small number of people; FAISS or similar would be needed at scale.
 
 ## Future improvements
 
-- Larger, more diverse evaluation dataset with a proper FAR/FRR-vs-threshold curve.
-- Liveness/anti-spoofing detection.
-- FAISS or similar for scaling beyond a few hundred enrolled identities.
-- Optional webcam capture in addition to image upload.
+- A larger real evaluation (full LFW protocol, look-alikes, phone/webcam photos) before re-tuning the thresholds.
+- Liveness / anti-spoofing detection; delete thumbnails together with the person.
+- FAISS for larger galleries; optional webcam capture.
 
 ## Tech stack
 
-Python, InsightFace (ArcFace + SCRFD), ONNX Runtime, OpenCV, NumPy, SQLite, Streamlit.
+Python, InsightFace (SCRFD + ArcFace), ONNX Runtime, OpenCV, NumPy, SQLite, FastAPI · Next.js, React, TypeScript,
+Tailwind CSS, shadcn/ui (Base UI) · Streamlit (optional UI).
 
 ## Project structure
 
 ```
 face-recognition-system/
-├── app.py                    # Home / dashboard
-├── requirements.txt
-├── README.md
-├── .gitignore
-├── pages/
-│   ├── 1_Enroll.py
-│   ├── 2_Identify.py
-│   └── 3_People.py
+├── api.py                  # FastAPI service used by the Next.js UI
+├── app.py                  # Streamlit home page (optional UI)
+├── pages/                  # Streamlit Enroll / Identify / People
 ├── src/
-│   ├── config.py              # all tunable thresholds/paths
-│   ├── embeddings.py          # InsightFace detection + embedding wrapper
-│   ├── matching.py            # cosine similarity + tiered decision policy
-│   └── database.py            # SQLite persistence
-├── evaluation/
-│   └── run_evaluation.py
-├── tests/
-│   └── test_matching.py
-├── data/                      # git-ignored: db + thumbnails
-└── docs/
-    ├── ARCHITECTURE.md
-    ├── ML_PIPELINE.md
-    ├── EVALUATION.md
-    └── DECISIONS.md
+│   ├── config.py           # thresholds, retry limit, enrollment limits, paths
+│   ├── embeddings.py       # SCRFD + ArcFace (InsightFace) wrapper
+│   ├── matching.py         # cosine similarity + three-tier decision
+│   └── database.py         # SQLite persistence
+├── frontend/               # Next.js app (Dashboard, Enroll, Identify, People)
+│   ├── app/                # pages
+│   ├── components/         # shared UI components
+│   └── lib/api.ts          # typed client for api.py
+├── evaluation/run_evaluation.py
+├── tests/test_matching.py
+├── docs/                   # ARCHITECTURE, ML_PIPELINE, EVALUATION, DECISIONS
+├── data/                   # git-ignored: database + thumbnails
+└── evaluation_data/        # git-ignored: evaluation photos
 ```

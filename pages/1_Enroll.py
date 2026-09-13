@@ -19,6 +19,7 @@ files = st.file_uploader(
     type=["jpg", "jpeg", "png"],
     accept_multiple_files=True,
 )
+st.caption("For best results, add 3 photos with slightly different angles or lighting.")
 
 if files:
     if len(files) > config.MAX_ENROLLMENT_IMAGES:
