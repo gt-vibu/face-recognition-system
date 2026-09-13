@@ -152,6 +152,23 @@ streamlit run app.py
 
 ## Evaluation
 
+**Real photos — LFW, 50 people × 5 photos** (2-photo enrollment, default thresholds 0.62 / 0.45):
+
+| Metric | Result |
+|---|---|
+| Samples | 1,101 genuine identifications · 39,560 impostor comparisons · 1,839 unknown-person tests |
+| Correctly Confirmed | **90.2%** |
+| Uncertain (asked for another photo) | 9.8% |
+| Confirmed as the wrong person | **0** |
+| Unknown person Confirmed (false accept) | **0** |
+| Similarity: genuine range / highest impostor | 0.456 – 0.895 / 0.313 (no overlap) |
+| With 3 enrollment photos | 95.9% Confirmed, still 0 wrong-person / 0 false accepts |
+
+**In-app validation** (one real person + AI-generated faces): the real person was Confirmed at 0.95 on the enrollment
+photos and 0.77–0.95 on 24 of 26 edited variants (lighting, blur, rotation, occlusion; the 2 tight crops had no face
+detected), while every other face scored ≤ 0.13 against them. The failures were a head-turned photo (0.42 → Unknown)
+and 4 false accepts at 0.62, all from AI-generated faces the generator had duplicated.
+
 Run `python evaluation/run_evaluation.py` (see its docstring for the `evaluation_data/` layout). `docs/EVALUATION.md`
 has the real-person results (50 LFW people, 250 photos), the in-app validation (one real person plus AI-generated
 faces), the threshold sweep, robustness tests and failure cases — and the caveat that the synthetic faces include
